@@ -49,7 +49,8 @@
 
 | 模块 | 职责 |
 |---|---|
-| `app/config.py` | 配置加载:API key、并发数、验证码超时、轮询间隔、浏览器参数、网关端口/密钥 |
+| `app/config.py` | 配置加载:API key、并发数、验证码超时、轮询间隔、浏览器参数、网关端口/密钥、代理配置 |
+| `app/proxy.py` | 代理管理双模式:Clash 订阅代理池(轮换出口) / 本地指定代理出口;为注册任务与网关请求提供代理 |
 | `app/mail_client.py` | 邮箱抽象:MailOps API 为主,IMAP 回退;统一 `reserve() / poll_code() / mark_used() / release()` |
 | `app/engine/` | 注册引擎:`base.py`(统一抽象+流程)、`browser.py`(Playwright)、`protocol.py`(requests,二期) |
 | `app/pool.py` | 注册任务池:`Semaphore(10)` 限流,状态机(排队/运行中/成功/失败/重试中) |
@@ -63,12 +64,13 @@
 ### 4.1 统一流程
 
 ```
-① mail.reserve(platform=trae) → email + lease_token
-② 打开 trae.ai/signup → 填 email 提交
-③ mail.poll_code(email, lease_token) 轮询验证码(8s 间隔,默认 180s 超时)
-④ 填入验证码 → 设置密码 → 提交
-⑤ 自动登录 → 抓取会话凭据(cookie / access_token / refresh_token)
-⑥ 成功 → mail.mark_used(上报账号资料) → 账号+凭据入库
+① 分配代理出口(按代理策略,见 §7)
+② mail.reserve(platform=trae) → email + lease_token
+③ 打开 trae.ai/signup(经代理) → 填 email 提交
+④ mail.poll_code(email, lease_token) 轮询验证码(8s 间隔,默认 180s 超时)
+⑤ 填入验证码 → 设置密码 → 提交
+⑥ 自动登录 → 抓取会话凭据(cookie / access_token / refresh_token)
+⑦ 成功 → mail.mark_used(上报账号资料) → 账号+凭据入库
    失败 → mail.release(归还邮箱) → 任务失败,原因记录
 ```
 
@@ -109,9 +111,24 @@ Trae 聊天接口协议未知,是反代网关的**前置依赖**。侦察方案:
 
 **风险**:Trae 可能改端点/加密 body/校验指纹。缓解:trae_client 层做统一封装,协议变化只改该文件;必要时走浏览器混合模式(Playwright 发消息+读 SSE)。
 
-## 7. 反代网关(gateway/)
+## 7. 代理策略(proxy.py)
 
-### 7.1 OpenAI 兼容层(adapter.py)
+注册任务与网关请求的出口代理,两种模式:
+
+| 模式 | 配置 | 说明 |
+|---|---|---|
+| A. Clash 订阅代理池 | `CLASH_SUB_URL`(订阅链接)+ mihomo 核心 | 解析订阅获取节点列表,每任务/会话分配独立节点(轮换出口 IP),降低批量注册风控关联;节点失败自动切换 |
+| B. 本地指定代理 | `PROXY_URL`(如 `http://127.0.0.1:7890` 或 socks5) | 手动指定单个代理出口,适合已有代理客户端/机场工具的场景 |
+
+- 模式切换:`PROXY_MODE=none|clash|manual`,默认 `none`(直连)
+- 分配策略:注册任务每任务独立出口(轮换);网关请求按账号绑定出口,失败切换
+- Clash 订阅:解析节点列表 → 可用性探测(轻量 HTTP 请求)→ 入池;通过 mihomo API 或内置库管理
+- 启动自检:代理对 trae.ai 的连通性
+- 注意:MailOps API 请求走本地直连(无需代理),仅 Trae 流量走代理
+
+## 8. 反代网关(gateway/)
+
+### 8.1 OpenAI 兼容层(adapter.py)
 
 ```
 POST /v1/chat/completions  (可选 Authorization: Bearer <网关密钥>)
@@ -124,27 +141,27 @@ GET /v1/models → 返回 trae 可用模型列表
 - stream=true 时按 OpenAI SSE 规范(`data: {...}` / `data: [DONE]`)转发
 - 超时、错误映射为 OpenAI 错误格式(`{"error": {"message": ...}}`)
 
-### 7.2 Trae 客户端(trae_client.py)
+### 8.2 Trae 客户端(trae_client.py)
 
 - 基于侦察的聊天协议实现
 - 会话管理:每账号保持 cookie/token 有效态,过期自动重登
 - 独立封装:协议变化只改本文件
 
-### 7.3 账号池(account_pool.py)
+### 8.3 账号池(account_pool.py)
 
 - 从账号库加载可用凭据
 - 轮询策略:round-robin;失败切换(连续 N 次失败标记不健康,冷却后重测)
 - 并发保护:每账号同时 1 个会话,全局队列限流
 - 额度健康检查:定期(或按调用失败率)用轻量请求验证账号可用性;识别 Free 档额度耗尽(返回配额类错误)并标记,额度重置周期后自动恢复
 - 账号耗尽 → 503 + 提示补充账号
-- **Pro 试用增强(可选,默认关闭)**:`ENABLE_PRO_TRIAL` 配置,注册完成后自动领取 7 天 Pro 试用以提升额度;涉及滥用风险,需用户显式开启
+- **Pro 试用增强(可选,默认关闭)**:`ENABLE_PRO_TRIAL` 配置,注册完成后自动领取 7 天 Pro 试用以提升额度;领取方式为直接领取无需绑卡(用户确认,待实测;若实测需绑卡则标记为风险点),涉及滥用风险,需用户显式开启
 
-### 7.4 网关安全(基础)
+### 8.4 网关安全(基础)
 
 - 网关密钥(可选):`GATEWAY_API_KEY` 配置,未配置时仅监听 127.0.0.1
 - 请求日志入库(gateway_logs 表),便于排查
 
-## 8. 任务与并发(注册机)
+## 9. 任务与并发(注册机)
 
 - 提交批量任务 → 拆分子任务入队
 - `asyncio.Semaphore(10)` 限流
@@ -152,7 +169,7 @@ GET /v1/models → 返回 trae 可用模型列表
 - 失败一键重试:优先复用未过期 lease,否则重新 reserve
 - WebSocket 推送状态变更
 
-## 9. 存储设计(SQLite)
+## 10. 存储设计(SQLite)
 
 ```sql
 accounts(id, email, password, status, engine,
@@ -165,7 +182,7 @@ gateway_logs(id, account_id, model, stream, status, latency_ms, created_at)
 
 凭据字段仅存本地 SQLite,Web 界面导出时需确认。
 
-## 10. 错误处理
+## 11. 错误处理
 
 | 场景 | 处理 |
 |---|---|
@@ -176,9 +193,10 @@ gateway_logs(id, account_id, model, stream, status, latency_ms, created_at)
 | mark-used/release 409 | lease 失效,标记人工复核 |
 | 登录失败/凭据抓取失败 | 账号标记 degraded,重试登录 |
 | 网关账号失败 | 切换下一账号;连续失败标记不健康+冷却 |
+| 代理节点失效 | 切换池内下一节点;池耗尽降级直连并告警 |
 | 网关无可用账号 | 503,提示补充账号 |
 
-## 11. Web 界面(web/)
+## 12. Web 界面(web/)
 
 单页(index.html + app.js):
 - 引擎选择(浏览器/协议,协议二期启用)
@@ -186,15 +204,16 @@ gateway_logs(id, account_id, model, stream, status, latency_ms, created_at)
 - 任务看板:状态、进度、失败原因、重试按钮
 - 账号库:凭据状态、健康度、导出(CSV/JSON,含凭据需二次确认)
 - 网关面板:模型列表、今日调用量、账号池健康、启停开关
+- 代理配置:模式切换、Clash 订阅链接、节点列表与连通状态
 - WebSocket 实时刷新
 
-## 12. 合规
+## 13. 合规
 
 - README 免责声明:仅供学习研究,遵守 Trae 服务条款,禁止商业用途
 - `.env`(API key、网关密钥)已加入 `.gitignore`,不提交
 - 网关默认仅本机监听,防误用
 
-## 13. 项目结构
+## 14. 项目结构
 
 ```
 trae_register/
@@ -202,6 +221,7 @@ trae_register/
 │   ├── __init__.py
 │   ├── config.py
 │   ├── mail_client.py          # MailOps API 为主 + IMAP 回退
+│   ├── proxy.py                 # 代理管理(Clash 订阅池 / 本地代理)
 │   ├── engine/
 │   │   ├── __init__.py
 │   │   ├── base.py             # 注册引擎抽象 + 统一流程
@@ -232,21 +252,22 @@ trae_register/
 └── README.md
 ```
 
-## 14. 技术选型
+## 15. 技术选型
 
 - Python 3.12
 - FastAPI + uvicorn + WebSocket
 - Playwright(async)+ imapclient + curl_cffi(协议模式用)
+- mihomo(Clash 内核,代理模式 A 用)
 - SQLite(内置 sqlite3)
 - 前端原生 HTML/JS
 
-## 15. 测试策略
+## 16. 测试策略
 
 - 单元:mail_client(Mock API)、pool(状态机)、storage(CRUD)、adapter(OpenAI 格式转换)、account_pool(轮询/切换)
 - 集成:注册流程 mock 化;网关用 mock trae_client 验证 OpenAI 兼容性(含 SSE)
 - 手工冒烟:真实注册 1 账号 → 网关真实对话 1 条验证全链路
 
-## 16. 实施顺序(两阶段)
+## 17. 实施顺序(两阶段)
 
 **阶段一(注册机)**:config → storage → mail_client → engine/browser → pool → api → web → 冒烟注册
 **阶段二(网关)**:接口侦察 → trae_client → account_pool → adapter → 网关接口 → web 网关面板 → 冒烟对话
