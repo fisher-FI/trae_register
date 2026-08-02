@@ -7,13 +7,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import create_app
+from app.config import Config
 from app.storage import Storage
 
 
 @pytest.fixture
 def client(tmp_path):
     storage = Storage(tmp_path / "t.db")
-    app = create_app(storage=storage, concurrency=2)
+    # 显式空 key,避免读到项目 .env 中的真实 key
+    app = create_app(storage=storage, concurrency=2,
+                     cfg=Config(mailops_api_key=""))
     with TestClient(app) as c:
         yield c
 
