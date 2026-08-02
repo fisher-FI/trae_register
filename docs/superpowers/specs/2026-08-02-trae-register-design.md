@@ -12,7 +12,7 @@
 
 **账号价值依据(Trae 官方定价,2026-08-02 核实)**:Trae 提供 0 元免费使用——
 - **Free 档**:每个账号有有限免费使用额度(Limited usage)+ Autocomplete 5000 次/月
-- **Pro 档**:新用户 7 天免费试用($0),含 $20 Basic usage + Bonus usage,之后 $10/月
+- **Pro 档**:新用户 7 天免费试用($0,含 $20 Basic usage + Bonus usage,之后 $10/月;**需绑定支付卡,扣费 0 元**,绑卡环节由注册机全自动完成)
 - 批量注册即批量获得免费额度池;Pro 试用可作为**可选增强**(默认关闭,合规风险较高)
 
 **成功标准**:
@@ -69,8 +69,9 @@
 ③ 打开 trae.ai/signup(经代理) → 填 email 提交
 ④ mail.poll_code(email, lease_token) 轮询验证码(8s 间隔,默认 180s 超时)
 ⑤ 填入验证码 → 设置密码 → 提交
-⑥ 自动登录 → 抓取会话凭据(cookie / access_token / refresh_token)
-⑦ 成功 → mail.mark_used(上报账号资料) → 账号+凭据入库
+⑥ 领取 Pro 试用(可选):进入升级页 → 自动填卡(卡号/有效期/CVC/账单地址)→ 提交 0 元支付
+⑦ 自动登录 → 抓取会话凭据(cookie / access_token / refresh_token)
+⑧ 成功 → mail.mark_used(上报账号资料) → 账号+凭据入库
    失败 → mail.release(归还邮箱) → 任务失败,原因记录
 ```
 
@@ -154,7 +155,11 @@ GET /v1/models → 返回 trae 可用模型列表
 - 并发保护:每账号同时 1 个会话,全局队列限流
 - 额度健康检查:定期(或按调用失败率)用轻量请求验证账号可用性;识别 Free 档额度耗尽(返回配额类错误)并标记,额度重置周期后自动恢复
 - 账号耗尽 → 503 + 提示补充账号
-- **Pro 试用增强(可选,默认关闭)**:`ENABLE_PRO_TRIAL` 配置,注册完成后自动领取 7 天 Pro 试用以提升额度;领取方式为直接领取无需绑卡(用户确认,待实测;若实测需绑卡则标记为风险点),涉及滥用风险,需用户显式开启
+- **Pro 试用增强(可选,默认关闭)**:`ENABLE_PRO_TRIAL` 配置开启后,注册完成自动领取 7 天 Pro 试用:
+  - **需要绑卡**:升级流程要求绑定支付卡(扣费 0 元),注册机自动填卡并提交(卡信息来自配置,见 §10 存储/§12 Web 界面)
+  - 卡数据:`CARD_NUMBER / CARD_EXP / CARD_CVC / CARD_BILLING`(用户提供虚拟卡或测试卡)
+  - 风险:卡 BIN 风控、3DS 验证、账单地址校验可能导致绑卡失败 → 任务标记 needs_card_review,人工兜底(前端弹窗手动填卡)
+  - 涉及滥用风险,需用户显式开启
 
 ### 8.4 网关安全(基础)
 
@@ -192,6 +197,7 @@ gateway_logs(id, account_id, model, stream, status, latency_ms, created_at)
 | 页面元素找不到 | 截图 + 失败原因入库 |
 | mark-used/release 409 | lease 失效,标记人工复核 |
 | 登录失败/凭据抓取失败 | 账号标记 degraded,重试登录 |
+| 绑卡失败(卡被拒/3DS/风控) | 任务标记 needs_card_review,前端弹窗人工填卡兜底 |
 | 网关账号失败 | 切换下一账号;连续失败标记不健康+冷却 |
 | 代理节点失效 | 切换池内下一节点;池耗尽降级直连并告警 |
 | 网关无可用账号 | 503,提示补充账号 |
@@ -200,7 +206,8 @@ gateway_logs(id, account_id, model, stream, status, latency_ms, created_at)
 
 单页(index.html + app.js):
 - 引擎选择(浏览器/协议,协议二期启用)
-- 批量提交:数量、并发数、密码规则
+- 批量提交:数量、并发数、密码规则、是否开启 Pro 试用
+- 卡片配置:卡号/有效期/CVC/账单地址(启用 Pro 试用时必填;3DS 等需人工的场景弹窗兜底)
 - 任务看板:状态、进度、失败原因、重试按钮
 - 账号库:凭据状态、健康度、导出(CSV/JSON,含凭据需二次确认)
 - 网关面板:模型列表、今日调用量、账号池健康、启停开关
@@ -246,7 +253,7 @@ trae_register/
 │   └── test_account_pool.py
 ├── screenshots/
 ├── logs/                       # 请求情报 + 运行日志
-├── .env                        # API key、网关密钥(已 gitignore)
+├── .env                        # API key、网关密钥、卡片配置(已 gitignore)
 ├── .gitignore
 ├── requirements.txt
 └── README.md
