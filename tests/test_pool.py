@@ -23,8 +23,7 @@ async def test_pool_limits_concurrency():
 
     pool = TaskPool(concurrency=3)
     await pool.submit_batch(
-        emails=[f"u{i}@b.com" for i in range(9)],
-        engine=None,  # 不真实注册
+        tasks=[(i + 1, f"u{i}@b.com") for i in range(9)],
         job=fake_job,
     )
     assert max_running <= 3
@@ -37,8 +36,7 @@ async def test_pool_tracks_results():
 
     pool = TaskPool(concurrency=2)
     results = await pool.submit_batch(
-        emails=["a@b.com", "c@d.com"],
-        engine=None,
+        tasks=[(1, "a@b.com"), (2, "c@d.com")],
         job=fake_job,
     )
     assert len(results) == 2

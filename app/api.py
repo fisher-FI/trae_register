@@ -114,7 +114,7 @@ def create_app(storage: Storage | None = None, concurrency: int = 10,
             await _notify(app, task_id, email)
 
         pool = TaskPool(concurrency=app.state.cfg.concurrency)
-        await pool.submit_batch([e for _, e in tasks], job)
+        await pool.submit_batch(tasks, job)
 
     async def _notify(app, task_id, email):
         task = storage.get_task(task_id)

@@ -67,9 +67,9 @@ class BrowserEngine(RegisterEngine):
         try:
             await page.goto(SIGNUP_URL, timeout=60000)
             # ① 填邮箱
-            await page.get_by_role("textbox", name="Email").fill(email)
-            # ② 发送验证码
-            await page.get_by_role("button", name="Send Code").click()
+            await page.get_by_placeholder("Email").fill(email)
+            # ② 发送验证码(trae 的 Send Code 是 div,非 button)
+            await page.locator(".send-code").click()
             # ③ 等待 MailOps 验证码 —— 由 pool 层轮询注入,此处返回等待中
             #    (验证码由外部 wait_for_code 拿到后调用 self.submit_code)
             await page.wait_for_timeout(500)
@@ -89,6 +89,21 @@ class BrowserEngine(RegisterEngine):
         """补充步骤:填入验证码 → 密码 → 提交。由 pool 在拿到验证码后调用。"""
         raise NotImplementedError("submit_code 在 Task 7 与 pool 集成后实现")
 
+    async def fetch_credentials(self, email: str, password: str) -> dict:
+        """登录并抓取 cookie/access_token/refresh_token。"""
+        ctx, page = await self._new_context(email, f"login-{int(time.time())}")
+        try:
+            await page.goto("https://www.trae.ai/login", timeout=60000)
+            await page.get_by_placeholder("Email").fill(email)
+            await page.get_by_placeholder("Password").fill(password)
+            await page.locator(".btn-submit").click()
+            await page.wait_for_url("**/ide**", timeout=60000)
+            cookies = await ctx.cookies()
+            cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+            return {"cookie": cookie_str, "access_token": "", "refresh_token": ""}
+        finally:
+            await ctx.close()
+
     async def run_full(self, email: str, request_id: str,
                        code_provider) -> RegistrationResult:
         """完整注册流程。code_provider: async (email) -> str 验证码提供者。"""
@@ -96,16 +111,16 @@ class BrowserEngine(RegisterEngine):
         ctx, page = await self._new_context(email, request_id)
         try:
             await page.goto(SIGNUP_URL, timeout=60000)
-            await page.get_by_role("textbox", name="Email").fill(email)
-            await page.get_by_role("button", name="Send Code").click()
+            await page.get_by_placeholder("Email").fill(email)
+            await page.locator(".send-code").click()
 
             code = await code_provider(email)
             if not code:
                 return RegistrationResult.failure(email, "验证码获取失败")
 
-            await page.get_by_role("textbox", name="Verification code").fill(code)
-            await page.get_by_role("textbox", name="Password").fill(password)
-            await page.get_by_role("button", name="Sign Up").click()
+            await page.get_by_placeholder("Verification code").fill(code)
+            await page.get_by_placeholder("Password").fill(password)
+            await page.locator(".btn-submit").click()
             await page.wait_for_url("**/ide**", timeout=60000)  # 注册成功进入 IDE
 
             # 凭据抓取:当前页面 cookie
