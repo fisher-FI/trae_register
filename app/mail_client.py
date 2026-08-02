@@ -100,3 +100,91 @@ class MailOpsClient:
             "lease_token": lease_token,
             "reason": reason,
         })
+
+
+class AsyncMailOpsClient:
+    """异步版(httpx.AsyncClient),不阻塞事件循环。"""
+
+    def __init__(self, api_key: str, base_url: str = "https://gptmail.passkissyou.online",
+                 http_client: httpx.AsyncClient | None = None):
+        self.base_url = base_url.rstrip("/")
+        self._http = http_client or httpx.AsyncClient(timeout=30)
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def _post(self, path: str, payload: dict) -> dict:
+        resp = await self._http.post(f"{self.base_url}{path}",
+                                     headers=self._headers, json=payload)
+        if resp.status_code == 409:
+            raise LeaseExpiredError(resp.text)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _get(self, path: str, params: dict) -> dict:
+        resp = await self._http.get(f"{self.base_url}{path}",
+                                    headers=self._headers, params=params)
+        if resp.status_code == 409:
+            raise LeaseExpiredError(resp.text)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def reserve(self, platform: str, request_id: str,
+                      lease_seconds: int) -> ReservedMailbox:
+        data = await self._post("/api/reuse/v1/mail/reserve", {
+            "platform": platform,
+            "request_id": request_id,
+            "lease_seconds": lease_seconds,
+        })
+        if not data.get("email"):
+            raise NoMailboxError(data.get("reason", "no_available"))
+        return ReservedMailbox(
+            email=data["email"],
+            lease_token=data["lease_token"],
+            lease_expires_at=data.get("lease_expires_at", ""),
+        )
+
+    async def poll_code(self, email: str, lease_token: str) -> str | None:
+        data = await self._get("/api/mail/code", {
+            "email": email,
+            "lease_token": lease_token,
+            "keyword": MAILOPS_KEYWORDS,
+            "limit": 10,
+            "folders": "inbox,junk",
+        })
+        if data.get("found") and data.get("code"):
+            return str(data["code"])
+        return None
+
+    async def wait_for_code(self, email: str, lease_token: str,
+                            timeout: int = 300, interval: int = 8) -> str:
+        import asyncio
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            code = await self.poll_code(email, lease_token)
+            if code:
+                return code
+            await asyncio.sleep(interval)
+        raise TimeoutError(f"验证码超时({timeout}s): {email}")
+
+    async def mark_used(self, email: str, lease_token: str, *, platform: str,
+                        login_email: str, status: str = "available",
+                        detail: dict | None = None) -> None:
+        await self._post("/api/reuse/v1/mail/mark-used", {
+            "platform": platform,
+            "email": email,
+            "lease_token": lease_token,
+            "login_email": login_email,
+            "status": status,
+            "detail": detail or {"stage": "registered"},
+        })
+
+    async def release(self, email: str, lease_token: str, *, platform: str,
+                      reason: str) -> None:
+        await self._post("/api/reuse/v1/mail/release", {
+            "platform": platform,
+            "email": email,
+            "lease_token": lease_token,
+            "reason": reason,
+        })

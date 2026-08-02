@@ -14,7 +14,7 @@ class Config:
     mailops_api_key: str = ""
     mailops_base_url: str = "https://gptmail.passkissyou.online"
     concurrency: int = 10
-    code_timeout: int = 180
+    code_timeout: int = 300
     code_poll_interval: int = 8
     lease_seconds: int = 1800
     proxy_mode: str = "none"  # none | clash | manual

@@ -72,3 +72,25 @@ def test_mark_used_and_release():
                 login_email="user1@outlook.com")
     c.release("user1@outlook.com", "lease_abc", platform="trae", reason="test")
     assert calls == ["/api/reuse/v1/mail/mark-used", "/api/reuse/v1/mail/release"]
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_async_client_reserve_and_poll():
+    from app.mail_client import AsyncMailOpsClient
+
+    def handler(request):
+        if request.url.path == "/api/reuse/v1/mail/reserve":
+            return httpx.Response(200, json={"ok": True, "email": "u@outlook.com",
+                                             "lease_token": "lt1"})
+        return httpx.Response(200, json={"ok": True, "found": True, "code": "654321"})
+
+    c = AsyncMailOpsClient(api_key="mak_test", base_url="https://mock.local",
+                           http_client=httpx.AsyncClient(
+                               transport=httpx.MockTransport(handler)))
+    mb = await c.reserve("trae", "b1-w1-a1", 1800)
+    assert mb.email == "u@outlook.com"
+    code = await c.poll_code("u@outlook.com", "lt1")
+    assert code == "654321"

@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.config import Config, load_config
-from app.mail_client import MailOpsClient, NoMailboxError
+from app.mail_client import AsyncMailOpsClient, MailOpsClient, NoMailboxError
 from app.storage import Storage
 
 
@@ -28,7 +28,7 @@ def create_app(storage: Storage | None = None, concurrency: int = 10,
     app = FastAPI(title="Trae 注册机", lifespan=lifespan)
     app.state.cfg = cfg
     app.state.storage = storage
-    app.state.mail = MailOpsClient(cfg.mailops_api_key, cfg.mailops_base_url)
+    app.state.mail = AsyncMailOpsClient(cfg.mailops_api_key, cfg.mailops_base_url)
     app.state.connections: list[WebSocket] = []
 
     @app.get("/api/health")
@@ -47,8 +47,8 @@ def create_app(storage: Storage | None = None, concurrency: int = 10,
         tasks_created = []
         for i in range(req.count):
             try:
-                mb = app.state.mail.reserve("trae", f"{batch_id}-w{i+1}-a1",
-                                            cfg.lease_seconds)
+                mb = await app.state.mail.reserve("trae", f"{batch_id}-w{i+1}-a1",
+                                                  cfg.lease_seconds)
             except NoMailboxError:
                 break
             task_id = storage.create_task(batch_id, mb.email, "browser")
@@ -77,7 +77,7 @@ def create_app(storage: Storage | None = None, concurrency: int = 10,
                         if not lease_token:
                             return None
                         try:
-                            return app.state.mail.wait_for_code(
+                            return await app.state.mail.wait_for_code(
                                 mail_addr, lease_token,
                                 timeout=app.state.cfg.code_timeout,
                                 interval=app.state.cfg.code_poll_interval)
@@ -96,14 +96,14 @@ def create_app(storage: Storage | None = None, concurrency: int = 10,
                         refresh_token=result.credentials.get("refresh_token", ""),
                         health_status="healthy",
                     )
-                    app.state.mail.mark_used(
+                    await app.state.mail.mark_used(
                         email, app.state.leases.get(email, ""),
                         platform="trae", login_email=email)
                 else:
                     storage.update_task_status(task_id, "failed",
                                                reason=result.reason)
                     try:
-                        app.state.mail.release(
+                        await app.state.mail.release(
                             email, app.state.leases.get(email, ""),
                             platform="trae",
                             reason=f"register failed: {result.reason[:100]}")
