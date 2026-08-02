@@ -88,3 +88,41 @@ class BrowserEngine(RegisterEngine):
     async def submit_code(self, request_id: str, code: str) -> RegistrationResult:
         """补充步骤:填入验证码 → 密码 → 提交。由 pool 在拿到验证码后调用。"""
         raise NotImplementedError("submit_code 在 Task 7 与 pool 集成后实现")
+
+    async def run_full(self, email: str, request_id: str,
+                       code_provider) -> RegistrationResult:
+        """完整注册流程。code_provider: async (email) -> str 验证码提供者。"""
+        password = f"Trae@{int(time.time())}x"
+        ctx, page = await self._new_context(email, request_id)
+        try:
+            await page.goto(SIGNUP_URL, timeout=60000)
+            await page.get_by_role("textbox", name="Email").fill(email)
+            await page.get_by_role("button", name="Send Code").click()
+
+            code = await code_provider(email)
+            if not code:
+                return RegistrationResult.failure(email, "验证码获取失败")
+
+            await page.get_by_role("textbox", name="Verification code").fill(code)
+            await page.get_by_role("textbox", name="Password").fill(password)
+            await page.get_by_role("button", name="Sign Up").click()
+            await page.wait_for_url("**/ide**", timeout=60000)  # 注册成功进入 IDE
+
+            # 凭据抓取:当前页面 cookie
+            cookies = await ctx.cookies()
+            cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+            return RegistrationResult.success(
+                email, password,
+                credentials={"cookie": cookie_str,
+                             "access_token": "", "refresh_token": ""},
+            )
+        except Exception as e:  # noqa: BLE001
+            shot = self.cfg.screenshots_dir / f"{request_id}.png"
+            self.cfg.screenshots_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                await page.screenshot(path=str(shot))
+            except Exception:
+                pass
+            return RegistrationResult.failure(email, f"{type(e).__name__}: {e}")
+        finally:
+            await ctx.close()
