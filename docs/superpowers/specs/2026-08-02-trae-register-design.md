@@ -69,7 +69,7 @@
 ③ 打开 trae.ai/signup(经代理) → 填 email 提交
 ④ mail.poll_code(email, lease_token) 轮询验证码(8s 间隔,默认 180s 超时)
 ⑤ 填入验证码 → 设置密码 → 提交
-⑥ 领取 Pro 试用(可选):进入升级页 → 自动填卡(卡号/有效期/CVC/账单地址)→ 提交 0 元支付
+⑥ 领取 Pro 试用(可选):进入升级页 → 绑卡支付(双实现,见下)→ 提交 0 元支付
 ⑦ 自动登录 → 抓取会话凭据(cookie / access_token / refresh_token)
 ⑧ 成功 → mail.mark_used(上报账号资料) → 账号+凭据入库
    失败 → mail.release(归还邮箱) → 任务失败,原因记录
@@ -156,8 +156,11 @@ GET /v1/models → 返回 trae 可用模型列表
 - 额度健康检查:定期(或按调用失败率)用轻量请求验证账号可用性;识别 Free 档额度耗尽(返回配额类错误)并标记,额度重置周期后自动恢复
 - 账号耗尽 → 503 + 提示补充账号
 - **Pro 试用增强(可选,默认关闭)**:`ENABLE_PRO_TRIAL` 配置开启后,注册完成自动领取 7 天 Pro 试用:
-  - **需要绑卡**:升级流程要求绑定支付卡(扣费 0 元),注册机自动填卡并提交(卡信息来自配置,见 §10 存储/§12 Web 界面)
-  - 卡数据:`CARD_NUMBER / CARD_EXP / CARD_CVC / CARD_BILLING`(用户提供虚拟卡或测试卡)
+  - **需要绑卡**:升级流程要求绑定支付卡(扣费 0 元),卡信息来自配置(`CARD_NUMBER / CARD_EXP / CARD_CVC / CARD_BILLING`,见 §10 存储/§12 Web 界面)
+  - **绑卡支付双实现**:
+    - 方式 A(浏览器):Playwright 进升级页自动填卡提交——先跑通流程
+    - 方式 B(提链直调):浏览器拦截支付环节请求,提取支付网关链接与参数(如 Stripe 的 PaymentIntent/client_secret、Paddle 等托管收银台);若网关协议可直调,则用 curl_cffi 直接 POST 卡信息完成 0 元支付,不依赖页面 DOM;直调不通时降级回方式 A
+  - 支付协议情报与聊天接口情报一样落盘 `logs/requests/`(见 §6 接口侦察)
   - 风险:卡 BIN 风控、3DS 验证、账单地址校验可能导致绑卡失败 → 任务标记 needs_card_review,人工兜底(前端弹窗手动填卡)
   - 涉及滥用风险,需用户显式开启
 
